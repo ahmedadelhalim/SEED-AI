@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="seed-csrf-token" content="__SEED_CSRF_TOKEN__">
+  <meta name="theme-color" content="#101619">
+  <title>SEED | Control Center</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-frame">
+    <aside class="sidebar" aria-label="Main navigation">
+      <a class="brand" href="#assistant" aria-label="SEED Control Center">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span class="brand-copy"><strong>SEED</strong><small>CONTROL CENTER</small></span>
+      </a>
+
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="primary-nav">
+        <button class="nav-item active" type="button" data-view="assistant"><span class="nav-glyph">A</span>Assistant</button>
+        <button class="nav-item" type="button" data-view="tasks"><span class="nav-glyph">T</span>Task center<span class="nav-count" id="nav-task-count">0</span></button>
+        <button class="nav-item" type="button" data-view="activity"><span class="nav-glyph">E</span>Activity &amp; audit</button>
+        <button class="nav-item" type="button" data-view="settings"><span class="nav-glyph">S</span>System settings</button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <div class="privacy-indicator"><span class="privacy-dot"></span><span>Microphone off</span></div>
+        <p>Local control surface<br>SEED remains in command</p>
+        <span class="version-label">DEVELOPMENT BUILD</span>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="breadcrumb"><span>SEED</span><span class="crumb-separator">/</span><strong id="topbar-section">Assistant</strong></div>
+        <div class="topbar-actions">
+          <div class="connection-state"><span class="connection-dot" id="connection-dot"></span><span id="connection-label">Checking local service</span></div>
+          <button class="icon-button" id="refresh-button" type="button" aria-label="Refresh system status" title="Refresh status"><span aria-hidden="true">↻</span></button>
+        </div>
+      </header>
+
+      <section class="view active" id="assistant-view" aria-labelledby="assistant-title">
+        <div class="page-heading">
+          <div><p class="eyebrow">CENTRAL INTELLIGENCE</p><h1 id="assistant-title">Assistant workspace</h1></div>
+          <div class="session-pill"><span class="session-pip"></span><span>SEED session</span><span class="session-id" id="session-short-id">Starting</span></div>
+        </div>
+
+        <div class="assistant-layout">
+          <section class="conversation-surface" aria-label="Assistant conversation">
+            <div class="conversation-header">
+              <div><h2>Conversation</h2><p>Intelligent companion governed by SEED Brain &amp; Memory.</p></div>
+              <div class="assistant-state" id="assistant-state"><span class="state-light"></span><span id="orb-state-label">IDLE</span></div>
+            </div>
+
+            <div class="orb-stage" aria-label="SEED Smart Orb state visualization">
+              <div class="orb-mode-switch">
+                <button type="button" class="mode-btn active" id="mode-orb-btn" data-mode="orb">Orb</button>
+                <button type="button" class="mode-btn" id="mode-avatar-btn" data-mode="avatar">Avatar</button>
+              </div>
+              <div class="orb-orbit orbit-one"></div>
+              <div class="orb-orbit orbit-two"></div>
+              <div class="smart-orb" id="smart-orb" data-state="idle" role="img" aria-label="Smart Orb idle">
+                <div class="orb-halo"></div><div class="orb-core"></div><div class="orb-glint"></div>
+              </div>
+              <div class="avatar-container" id="avatar-container" hidden>
+                <div class="avatar-ring"></div>
+                <div class="avatar-face">
+                  <div class="avatar-eyes"><span></span><span></span></div>
+                  <div class="avatar-mouth" id="avatar-mouth"></div>
+                </div>
+              </div>
+              <div class="orb-caption"><span class="orb-caption-name">SEED</span><span class="orb-caption-state" id="orb-caption-state">Ready for a request</span></div>
+            </div>
+
+            <div class="conversation-feed" id="conversation-feed" aria-live="polite" aria-label="Conversation messages">
+              <div class="empty-conversation" id="empty-conversation">
+                <span class="empty-mark">S</span>
+                <strong>Start with a request / ابدأ طلبك</strong>
+                <p>SEED will plan, check permissions, and execute only registered tools with bilingual intelligence.</p>
+                <div class="quick-suggestions">
+                  <button type="button" class="suggestion-chip" data-prompt="Scan the workspace and check files">Scan workspace</button>
+                  <button type="button" class="suggestion-chip" data-prompt="Check system health and registered services">System health</button>
+                  <button type="button" class="suggestion-chip" data-prompt="افحص مساحة العمل وعرض حالة النظام">فحص النظام</button>
+                  <button type="button" class="suggestion-chip" data-prompt="Show all recent tasks and execution history">Task history</button>
+                </div>
+              </div>
+            </div>
+
+            <form class="composer" id="request-form">
+              <label class="visually-hidden" for="request-input">Message SEED</label>
+              <textarea id="request-input" name="request" rows="2" maxlength="8000" placeholder="Describe what you need SEED to do / اكتب طلبك هنا…" dir="auto" required></textarea>
+              <div class="composer-footer">
+                <span class="composer-note">Text requests go through SeedOrchestrator.</span>
+                <button class="send-button" id="send-button" type="submit"><span>Send to SEED</span><span class="send-arrow" aria-hidden="true">↗</span></button>
+              </div>
+            </form>
+
+            <div class="voice-placeholder" aria-label="Advanced Voice Controls">
+              <button type="button" id="voice-listen-btn" class="voice-button" onclick="window.SeedVoice.listen()" aria-label="Start Voice Recognition">
+                <span class="voice-icon">🎙️</span>
+                <span id="voice-btn-text">Speak to SEED</span>
+              </button>
+              <button type="button" id="voice-stop-btn" class="voice-button secondary" onclick="window.SeedVoice.stop()" aria-label="Stop Voice">
+                <span class="voice-icon">⏹️</span>
+                <span>Stop</span>
+              </button>
+              <button type="button" id="lang-toggle-btn" class="voice-button secondary" aria-label="Toggle Language">
+                🌐 <span id="lang-badge">EN/AR</span>
+              </button>
+              <span id="voice-status-badge" class="voice-badge">IDLE</span>
+            </div>
+          </section>
+
+          <aside class="right-rail" aria-label="SEED system overview">
+            <section class="rail-section provider-section">
+              <div class="section-heading"><div><p class="eyebrow">INFERENCE</p><h2>Model provider</h2></div><span class="quiet-status" id="provider-status">Unverified</span></div>
+              <div class="provider-row"><span class="provider-icon">M</span><div><strong id="provider-name">Loading provider</strong><small id="provider-detail">Health is not probed automatically</small></div></div>
+            </section>
+
+            <section class="rail-section service-section">
+              <div class="section-heading"><div><p class="eyebrow">LOCAL SERVICES</p><h2>Service status</h2></div><span class="section-count" id="service-count">—</span></div>
+              <ul class="service-list" id="service-list"><li class="list-placeholder">Loading service registry…</li></ul>
+            </section>
+
+            <section class="rail-section approvals-section">
+              <div class="section-heading"><div><p class="eyebrow">GOVERNANCE</p><h2>Awaiting approval</h2></div><span class="section-count" id="approval-count">0</span></div>
+              <div class="approval-list" id="approval-list"><p class="list-placeholder">No approval requests.</p></div>
+            </section>
+
+            <section class="rail-section privacy-section">
+              <div class="privacy-row"><span class="privacy-lock" aria-hidden="true">●</span><div><strong>Microphone privacy</strong><small>Capture is off and not configured</small></div></div>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="tasks-view" aria-labelledby="tasks-title" hidden>
+        <div class="page-heading"><div><p class="eyebrow">EXECUTION LIFECYCLE</p><h1 id="tasks-title">Task center</h1></div><span class="data-label">LIVE DATABASE · LOCAL</span></div>
+        <div class="task-summary" id="task-summary"></div>
+        <section class="data-surface"><div class="data-heading"><div><h2>Execution history</h2><p>Persisted tasks from SEED</p></div><button class="text-button" id="tasks-refresh" type="button">Refresh</button></div><div class="table-scroll"><table><thead><tr><th>Task</th><th>Status</th><th>Project</th><th>Created</th></tr></thead><tbody id="task-table"><tr><td colspan="4" class="list-placeholder">Loading tasks…</td></tr></tbody></table></div></section>
+      </section>
+
+      <section class="view" id="activity-view" aria-labelledby="activity-title" hidden>
+        <div class="page-heading"><div><p class="eyebrow">OPERATIONAL TRACE</p><h1 id="activity-title">Activity &amp; audit</h1></div><span class="data-label">EVENT METADATA ONLY</span></div>
+        <section class="data-surface"><div class="data-heading"><div><h2>Recent events</h2><p>Permission and execution lifecycle</p></div><button class="text-button" id="audit-refresh" type="button">Refresh</button></div><div class="event-list" id="audit-list"><p class="list-placeholder">Loading audit events…</p></div></section>
+      </section>
+
+      <section class="view" id="settings-view" aria-labelledby="settings-title" hidden>
+        <div class="page-heading"><div><p class="eyebrow">CONFIGURATION</p><h1 id="settings-title">System settings</h1></div><span class="data-label">NO SECRETS DISPLAYED</span></div>
+        <div class="settings-grid">
+          <section class="data-surface settings-block"><p class="eyebrow">MODEL ROUTING</p><h2>Provider</h2><dl><div><dt>Default provider</dt><dd id="settings-provider">Unverified</dd></div><div><dt>Registered providers</dt><dd id="settings-providers">—</dd></div><div><dt>Health</dt><dd>Not probed on page load</dd></div></dl><p class="settings-note">Provider credentials are read by the SEED server process. They are never sent to this page.</p></section>
+          <section class="data-surface settings-block"><p class="eyebrow">VOICE</p><h2>Speech interface</h2><dl><div><dt>Speech recognition</dt><dd>Not configured</dd></div><div><dt>Speech synthesis</dt><dd>Not configured</dd></div><div><dt>Wake word</dt><dd>Off</dd></div></dl><p class="settings-note">Microphone capture is disabled. Voice activation requires an explicit future privacy design.</p></section>
+          <section class="data-surface settings-block"><p class="eyebrow">VISUAL IDENTITY</p><h2>Presentation</h2><dl><div><dt>Smart Orb</dt><dd>SEED state events</dd></div><div><dt>3D avatar</dt><dd>Not configured</dd></div><div><dt>Animation mode</dt><dd id="motion-setting">System preference</dd></div></dl><p class="settings-note">The optional avatar and Orb are presentation clients; all decisions remain in SEED.</p></section>
+        </div>
+      </section>
+
+      <footer class="main-footer"><span>SEED CENTRAL AUTHORITY</span><span id="event-connection">Event stream connecting</span><span>BOUND TO LOCALHOST</span></footer>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,40 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Databases and runtime credentials
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.enc
+data/seed_memory.db
+data/seed_memory.db.backup_*
+
+# Logs and temporary runtime data
+logs/
+*.log
+.seed_staged_skills/
+
+# Desktop dependencies and generated assets
+desktop/node_modules/
+.DS_Store
+Thumbs.db
+
+# Workspace test artifacts
+workspace/link_test/
+
+# Local IDE configuration
+.vscode/settings.json
