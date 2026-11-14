@@ -521,12 +521,35 @@
   document.getElementById("tasks-refresh").addEventListener("click", () => loadTasks().catch(() => {}));
   document.getElementById("audit-refresh").addEventListener("click", () => loadAudit().catch(() => {}));
 
-  document.addEventListener("click", (e) => {
-    if (e.target.classList.contains("suggestion-chip")) {
+  document.addEventListener("click", async (e) => {
+    if (e.target.classList.contains("suggestion-chip") && !e.target.classList.contains("autonomous-chip")) {
       const prompt = e.target.dataset.prompt;
       if (prompt && elements.input) {
         elements.input.value = prompt;
         elements.form.requestSubmit();
+      }
+    }
+    if (e.target.classList.contains("autonomous-chip")) {
+      appendMessage("user", "Understand this project, identify its most important problems, prioritize improvements, and execute the safest high-value improvements you can complete.");
+      setOrbState("planning", "SEED is executing autonomous mission");
+      try {
+        const res = await api("/api/autonomous/optimize", {
+          method: "POST",
+          body: JSON.stringify({ objective: "Understand this project, identify problems, and execute safe improvements." }),
+        });
+        const reportText = "Autonomous Mission Report:\n"
+          + "• Objective: " + res.objective + "\n"
+          + "• Findings:\n  - " + (res.findings || []).join("\n  - ") + "\n"
+          + "• Actions Taken:\n  - " + (res.actions_taken || []).join("\n  - ") + "\n"
+          + "• Verification: " + res.verification_status + "\n"
+          + "• Summary: " + res.summary;
+        appendMessage("assistant", reportText);
+        setOrbState("responding", "Mission completed");
+        window.setTimeout(() => setOrbState("idle", "Ready for a request"), 1500);
+        await Promise.all([loadTasks(), loadAudit()]);
+      } catch (err) {
+        appendMessage("assistant", "Autonomous mission encountered an error: " + err.message);
+        setOrbState("error", "Mission failed");
       }
     }
   });

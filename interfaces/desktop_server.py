@@ -251,6 +251,18 @@ class SeedDesktopRequestHandler(BaseHTTPRequestHandler):
             return
 
         parsed = urlsplit(self.path)
+        if parsed.path == "/api/autonomous/optimize":
+            objective = payload.get("objective", "Understand this project, identify problems, and execute safe improvements.")
+            project_id = payload.get("project_id", "seed-project")
+            try:
+                from core.autonomous_agent import AutonomousAgent
+                agent = AutonomousAgent(self.application)
+                report = agent.run_optimization_mission(objective, project_id=project_id)
+                self._send_json(200, report)
+            except Exception as error:
+                self._send_json(422, {"error": "Autonomous mission failed", "reason": str(error)})
+            return
+
         if parsed.path == "/api/plan":
             objective = payload.get("objective")
             if not isinstance(objective, str) or not objective.strip() or len(objective) > MAX_TEXT_CHARS:
