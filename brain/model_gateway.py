@@ -15,7 +15,7 @@ class ModelGateway:
     DEFAULT_OLLAMA_MODEL = "qwen3:4b"
     DEFAULT_OLLAMA_TIMEOUT_SECONDS = 180.0
     DEFAULT_OMNIROUTE_BASE_URL = "http://127.0.0.1:20128/v1"
-    SUPPORTED_PROVIDERS = ("ollama", "omniroute", "llama_embedded")
+    SUPPORTED_PROVIDERS = ("ollama", "omniroute", "llama_embedded", "llama_real")
 
     def __init__(self, providers: Iterable[ModelProvider] = (),
                  default_provider: Optional[str] = None):
@@ -32,6 +32,7 @@ class ModelGateway:
         from brain.providers.omniroute import OmniRouteProvider
         from brain.providers.ollama import OllamaProvider
         from brain.providers.llama_embedded import EmbeddedLlamaProvider
+        from brain.providers.llama_real import RealLlamaProvider
 
         configured_ollama_url = (
             ollama_base_url
@@ -49,7 +50,7 @@ class ModelGateway:
             or "ollama"
         ).strip().lower()
         if configured_default not in cls.SUPPORTED_PROVIDERS:
-            raise ValueError("SEED_MODEL_PROVIDER must be ollama, omniroute, or llama_embedded")
+            raise ValueError("SEED_MODEL_PROVIDER must be ollama, omniroute, llama_embedded, or llama_real")
 
         return cls(
             (OllamaProvider(
@@ -61,7 +62,8 @@ class ModelGateway:
                 ),
             ),
              OmniRouteProvider(base_url=configured_omniroute_url),
-             EmbeddedLlamaProvider()),
+             EmbeddedLlamaProvider(),
+             RealLlamaProvider()),
             default_provider=configured_default,
         )
 
@@ -137,6 +139,7 @@ class ModelGateway:
             temperature=request.temperature,
             timeout_seconds=request.timeout_seconds,
             provider=name,
+            response_format=request.response_format,
         )
         return provider.chat(routed_request)
 
