@@ -59,7 +59,7 @@ class ModelGatewayTests(TestCase):
         }):
             gateway = ModelGateway.with_local_defaults()
 
-        self.assertEqual(gateway.provider_names, ("ollama", "omniroute", "llama_embedded"))
+        self.assertEqual(gateway.provider_names, ("ollama", "omniroute", "llama_embedded", "llama_real"))
         self.assertEqual(gateway.default_provider, "ollama")
         self.assertEqual(
             gateway.get_provider("ollama").default_model,

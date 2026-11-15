@@ -97,13 +97,16 @@ class SeedOrchestrator:
         tool_results = []
         store.create_session(current_session, prompt[:120], identity.project_id)
         store.link_task_to_session(current_session, task_id)
+
+        # Integrate Unified Cognitive Intelligence Pipeline (UNDERSTAND -> RECALL)
+        from core.cognition import CognitiveEngine
+        cog_result = CognitiveEngine.process_objective(prompt, project_id=identity.project_id, session_id=current_session)
+        self.tasks.record_event(task_id, "cognitive_intent_classified", cog_result["intent"])
+        self.tasks.record_event(task_id, "cognitive_context_assembled", str(len(cog_result["context"]["memories"])))
+
         history = store.get_session_messages(current_session, limit=40)
-        memories = store.search_memory(
-            prompt, project_id=identity.project_id, limit=8
-        )
-        historical_tasks = store.search_task_history(
-            prompt, project_id=identity.project_id, limit=5
-        )
+        memories = cog_result["context"]["memories"]
+        historical_tasks = cog_result["context"]["historical_tasks"]
         messages = [
             {
                 "role": "system",
@@ -178,9 +181,9 @@ class SeedOrchestrator:
                     task_id, "model_request_failed", type(error).__name__
                 )
                 if getattr(error, "code", None) == "timeout":
-                    message = "The selected model timed out before completing the request."
+                    message = "The selected model timed out before completing the request. Please verify local model status in System settings."
                 else:
-                    message = "The selected model could not complete the request."
+                    message = f"SEED could not complete the request ({type(error).__name__}: {error}). Please verify local model provider connectivity in System settings."
                 return self._finish(
                     task_id, current_session, "failed", message,
                     step, tool_results,
@@ -535,6 +538,14 @@ class SeedOrchestrator:
             "cancelled": "cancelled",
         }.get(status, "failed")
         store.set_session_status(session_id, session_status)
+
+        if status == "completed":
+            try:
+                from core.cognition import CognitiveEngine
+                CognitiveEngine.learn_and_remember(task_id, response[:100], response, project_id="")
+            except Exception:
+                pass
+
         return OrchestrationResult(
             task_id=task_id,
             session_id=session_id,
