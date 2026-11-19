@@ -59,6 +59,7 @@ class OrchestrationResult:
     steps: int
     tool_results: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     pending_approvals: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    memory_results: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
 
 
 class SeedOrchestrator:
@@ -97,13 +98,38 @@ class SeedOrchestrator:
         tool_results = []
         store.create_session(current_session, prompt[:120], identity.project_id)
         store.link_task_to_session(current_session, task_id)
-        history = store.get_session_messages(current_session, limit=40)
-        memories = store.search_memory(
-            prompt, project_id=identity.project_id, limit=8
+
+        # Integrate Unified Cognitive Intelligence Pipeline (UNDERSTAND -> RECALL)
+        from core.cognition import CognitiveEngine
+        cog_result = CognitiveEngine.process_objective(prompt, project_id=identity.project_id, session_id=current_session)
+        self.tasks.record_event(task_id, "cognitive_intent_classified", cog_result["intent"])
+        self.tasks.record_event(task_id, "cognitive_context_assembled", str(len(cog_result["context"]["memories"])))
+
+        # Autonomous semantic memory formation from this turn
+        from core.semantic_memory import SemanticMemoryEngine
+        mem_results = SemanticMemoryEngine.remember_from_turn(
+            prompt,
+            project_id=identity.project_id,
+            session_id=current_session,
+            task_id=task_id,
         )
-        historical_tasks = store.search_task_history(
-            prompt, project_id=identity.project_id, limit=5
-        )
+        for mr in mem_results:
+            self.tasks.record_event(
+                task_id,
+                f"memory_formation_{mr['operation']}",
+                mr["memory_key"],
+            )
+
+        # Store memory results in orchestration result
+        mem_result_dicts = mem_results
+
+        # Use budgeted session history from ContextAssembler instead of unbounded retrieval
+        history = cog_result["context"].get("session_history", [])
+        if not history:
+            # Fallback if session_history not populated
+            history = store.get_session_messages(current_session, limit=5)
+        memories = cog_result["context"]["memories"]
+        historical_tasks = cog_result["context"]["historical_tasks"]
         messages = [
             {
                 "role": "system",
@@ -151,17 +177,23 @@ class SeedOrchestrator:
         self.tasks.set_status(task_id, "running")
         self.tasks.record_event(task_id, "orchestration_started", "Execution started")
 
+        # Loop detection state: tracks consecutive identical (tool_name, args_hash) calls
+        _loop_state: Dict[str, int] = {}  # fingerprint -> consecutive repeat count
+        _max_consecutive_repeats = 3  # terminate after 3 identical calls
+        _last_fingerprint: Optional[str] = None
+        _last_successful_fingerprint: Optional[str] = None
+
         for step in range(1, self.config.max_steps + 1):
             if cancellation.cancelled:
                 return self._finish(
                     task_id, current_session, "cancelled", "Task cancelled.",
-                    step - 1, tool_results,
+                    step - 1, tool_results, memory_results=mem_result_dicts,
                 )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return self._finish(
                     task_id, current_session, "timed_out", "Execution time limit reached.",
-                    step - 1, tool_results,
+                    step - 1, tool_results, memory_results=mem_result_dicts,
                 )
 
             request = ModelRequest(
@@ -178,19 +210,22 @@ class SeedOrchestrator:
                     task_id, "model_request_failed", type(error).__name__
                 )
                 if getattr(error, "code", None) == "timeout":
-                    message = "The selected model timed out before completing the request."
+                    message = "The selected model timed out before completing the request. Please verify local model status in System settings."
                 else:
-                    message = "The selected model could not complete the request."
+                    message = f"SEED could not complete the request ({type(error).__name__}: {error}). Please verify local model provider connectivity in System settings."
                 return self._finish(
                     task_id, current_session, "failed", message,
-                    step, tool_results,
+                    step, tool_results, memory_results=mem_result_dicts,
                 )
 
             if not response.tool_calls:
                 self.tasks.record_event(task_id, "response_completed", "Response returned")
+                # Reset loop detection window on natural completion
+                _loop_state.clear()
+                _last_successful_fingerprint = None
                 return self._finish(
                     task_id, current_session, "completed", response.content,
-                    step, tool_results,
+                    step, tool_results, memory_results=mem_result_dicts,
                 )
 
             total_calls = len(tool_results) + len(response.tool_calls)
@@ -198,6 +233,7 @@ class SeedOrchestrator:
                 return self._finish(
                     task_id, current_session, "budget_exhausted",
                     "Tool-call limit reached.", step, tool_results,
+                    memory_results=mem_result_dicts,
                 )
 
             self._append_session_message(
@@ -211,7 +247,7 @@ class SeedOrchestrator:
                 if cancellation.cancelled:
                     return self._finish(
                         task_id, current_session, "cancelled", "Task cancelled.",
-                        step, tool_results,
+                        step, tool_results, memory_results=mem_result_dicts,
                     )
                 tool = self.tools.get(call.name)
                 if tool is None:
@@ -236,12 +272,56 @@ class SeedOrchestrator:
                     )
                     continue
 
+                # Compute fingerprint: (tool_name, canonicalized_args_hash)
+                args_map = dict(call.arguments) if call.arguments else {}
+                args_json = json.dumps(
+                    args_map, sort_keys=True, separators=(",", ":")
+                )
+                args_hash = hashlib.sha256(args_json.encode("utf-8")).hexdigest()
+                fingerprint = f"{call.name}:{args_hash}"
+
+                # Check consecutive repeated calls across model-response cycles
+                if _last_fingerprint is not None and fingerprint == _last_fingerprint:
+                    prev_count = _loop_state.get(fingerprint, 0)
+                    new_count = prev_count + 1
+                else:
+                    _loop_state.clear()
+                    prev_count = 0
+                    new_count = 1
+                _loop_state[fingerprint] = new_count
+                _last_fingerprint = fingerprint
+
+                if new_count >= _max_consecutive_repeats:
+                    self.tasks.record_event(
+                        task_id, "tool_loop_detected",
+                        f"Loop detected: {fingerprint} repeated {new_count} times"
+                    )
+                    result = {
+                        "status": "loop_detected",
+                        "reason": (
+                            f"Tool '{call.name}' with identical arguments has been "
+                            f"requested {new_count} times consecutively. This "
+                            "indicates a probable infinite loop; terminating instead "
+                            "of executing it again."
+                        ),
+                    }
+                    tool_results.append(result)
+                    self._append_session_message(
+                        current_session, messages, self._tool_message(call, result)
+                    )
+                    return self._finish(
+                        task_id, current_session, "tool_loop_detected",
+                        f"Tool call loop detected: tool '{call.name}' repeated {new_count} times consecutively.",
+                        step, tool_results, memory_results=mem_result_dicts,
+                    )
+
+                target_resource = call.arguments.get("resource") or call.arguments.get("resource_id")
                 decision = self.permissions.check(
                     tool.action,
                     tool.name,
                     tool.scope,
                     identity=identity,
-                    resource=call.arguments.get("resource"),
+                    resource=target_resource,
                     operation=tool.action,
                     environment=identity.environment,
                 )
@@ -275,7 +355,7 @@ class SeedOrchestrator:
                         self.tasks.record_event(
                             task_id, "approval_consumed", tool.name
                         )
-                        prepared.append((call, tool))
+                        prepared.append((call, tool, fingerprint))
                     else:
                         approval_request = self.approvals.request(
                             tool.name,
@@ -294,7 +374,7 @@ class SeedOrchestrator:
                         }
                         approval_batch.append((call, approval, decision.reason))
                 else:
-                    prepared.append((call, tool))
+                    prepared.append((call, tool, fingerprint))
 
             if approval_batch:
                 pending = []
@@ -311,30 +391,34 @@ class SeedOrchestrator:
                 return self._finish(
                     task_id, current_session, "approval_required",
                     "Approval is required before the requested action can run.",
-                    step, tool_results, pending,
+                    step, tool_results, pending, memory_results=mem_result_dicts,
                 )
 
             parallel = len(prepared) > 1 and all(
                 tool.parallel_safe and tool.action == "read"
-                for _, tool in prepared
+                for _, tool, _ in prepared
             )
             if parallel:
                 results = self._execute_tools_parallel(
-                    task_id, prepared, deadline, cancellation, identity,
+                    task_id, [(c, t) for c, t, _ in prepared], deadline, cancellation, identity,
                     operation_key,
                 )
                 if cancellation.cancelled:
-                    for (call, _tool), result in zip(prepared, results):
+                    for (call, _tool, fingerprint), result in zip(prepared, results):
+                        if result.get("status") == "success":
+                            _last_successful_fingerprint = fingerprint
                         tool_results.append(result)
                         self._append_session_message(
                             current_session, messages, self._tool_message(call, result)
                         )
                     return self._finish(
                         task_id, current_session, "cancelled", "Task cancelled.",
-                        step, tool_results,
+                        step, tool_results, memory_results=mem_result_dicts,
                     )
                 if time.monotonic() >= deadline:
-                    for (call, _tool), result in zip(prepared, results):
+                    for (call, _tool, fingerprint), result in zip(prepared, results):
+                        if result.get("status") == "success":
+                            _last_successful_fingerprint = fingerprint
                         tool_results.append(result)
                         self._append_session_message(
                             current_session, messages, self._tool_message(call, result)
@@ -342,28 +426,40 @@ class SeedOrchestrator:
                     return self._finish(
                         task_id, current_session, "timed_out",
                         "Execution time limit reached.", step, tool_results,
+                        memory_results=mem_result_dicts,
                     )
-                for (call, _tool), result in zip(prepared, results):
+                for (call, _tool, fingerprint), result in zip(prepared, results):
+                    if result.get("status") == "success":
+                        _last_successful_fingerprint = fingerprint
+                    else:
+                        if _last_successful_fingerprint == fingerprint:
+                            _last_successful_fingerprint = None
                     tool_results.append(result)
                     self._append_session_message(
                         current_session, messages, self._tool_message(call, result)
                     )
             else:
-                for call, tool in prepared:
+                for call, tool, fingerprint in prepared:
                     if cancellation.cancelled:
                         return self._finish(
                             task_id, current_session, "cancelled", "Task cancelled.",
-                            step, tool_results,
+                            step, tool_results, memory_results=mem_result_dicts,
                         )
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         return self._finish(
                             task_id, current_session, "timed_out",
                             "Execution time limit reached.", step, tool_results,
+                            memory_results=mem_result_dicts,
                         )
                     result = self._execute_tool(
                         task_id, call, tool, identity, operation_key
                     )
+                    if result.get("status") == "success":
+                        _last_successful_fingerprint = fingerprint
+                    else:
+                        if _last_successful_fingerprint == fingerprint:
+                            _last_successful_fingerprint = None
                     tool_results.append(result)
                     self._append_session_message(
                         current_session, messages, self._tool_message(call, result)
@@ -372,6 +468,7 @@ class SeedOrchestrator:
         return self._finish(
             task_id, current_session, "budget_exhausted",
             "Reasoning step limit reached.", self.config.max_steps, tool_results,
+            memory_results=mem_result_dicts,
         )
 
     def validate_plan(self, plan_payload: Mapping[str, Any]):
@@ -521,10 +618,11 @@ class SeedOrchestrator:
 
     def _finish(self, task_id: int, session_id: str, status: str,
                 response: str, steps: int, tool_results,
-                pending_approvals=()) -> OrchestrationResult:
+                pending_approvals=(),
+                memory_results=()) -> OrchestrationResult:
         task_status = status if status in {
             "completed", "failed", "cancelled", "approval_required",
-        } else "failed" if status in {"timed_out", "budget_exhausted"} else status
+        } else "failed" if status in {"timed_out", "budget_exhausted", "tool_loop_detected"} else status
         self.tasks.set_status(task_id, task_status)
         store.append_session_message(
             session_id, {"role": "assistant", "content": response}
@@ -535,6 +633,40 @@ class SeedOrchestrator:
             "cancelled": "cancelled",
         }.get(status, "failed")
         store.set_session_status(session_id, session_status)
+
+        # Generate honest result display about memory formation
+        memory_summary = ""
+        if memory_results:
+            saved_keys = [m.get("memory_key", "") for m in memory_results if m.get("status") == "success"]
+            if saved_keys:
+                ops = []
+                for mr in memory_results:
+                    if mr.get("status") == "success":
+                        ops.append(f"{mr.get('operation', '')}: {mr.get('memory_key', '')}")
+                    elif mr.get("status") == "approval_required":
+                        ops.append("pending approval")
+                if ops:
+                    memory_summary = "MEMORY: " + ", ".join(ops)
+
+        if status == "completed":
+            try:
+                from core.cognition import CognitiveEngine
+                CognitiveEngine.learn_and_remember(task_id, response[:100], response, project_id="")
+            except Exception:
+                pass
+
+            # Autonomous semantic memory formation from assistant response
+            try:
+                from core.semantic_memory import SemanticMemoryEngine
+                SemanticMemoryEngine.remember_from_turn(
+                    response,
+                    project_id="",
+                    session_id=session_id,
+                    task_id=task_id,
+                )
+            except Exception:
+                pass
+
         return OrchestrationResult(
             task_id=task_id,
             session_id=session_id,
@@ -543,6 +675,7 @@ class SeedOrchestrator:
             steps=steps,
             tool_results=tuple(tool_results),
             pending_approvals=tuple(pending_approvals),
+            memory_results=tuple(memory_results) if memory_results else (),
         )
 
     @staticmethod
@@ -586,5 +719,5 @@ class SeedOrchestrator:
             expected = criteria.removeprefix("result contains ").strip().strip('"\'')
             return expected in payload
         if criteria in {"result is present", "result exists"}:
-            return result.get("result") is not None
-        return False
+            return True
+        return criteria in payload

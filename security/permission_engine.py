@@ -92,6 +92,31 @@ class PermissionEngine:
             "allowed": True,
             "approval": False,
         },
+        # Phase 2: Windows System Control & Host Automation
+        "windows.launch_app": {
+            "action": "execute",
+            "scope": "system",
+            "allowed": True,  # Allowlist enforced at handler level; unknown apps require approval
+            "approval": True,  # Write/execute actions require human approval by default
+        },
+        "windows.get_active_window": {
+            "action": "read",
+            "scope": "system",
+            "allowed": True,
+            "approval": False,
+        },
+        "windows.set_volume": {
+            "action": "modify",
+            "scope": "system",
+            "allowed": True,
+            "approval": True,  # Volume changes require approval
+        },
+        "windows.lock_workstation": {
+            "action": "modify",
+            "scope": "system",
+            "allowed": True,
+            "approval": True,  # Locking requires approval
+        },
     }
 
     def unregister_policy(self, tool: str, skill_id: Optional[str] = None, artifact_digest: Optional[str] = None):
@@ -142,7 +167,40 @@ class PermissionEngine:
               identity: Optional[ExecutionIdentity] = None,
               resource: Optional[str] = None,
               operation: Optional[str] = None,
-              environment: Optional[str] = None):
+              environment: Optional[str] = None,
+              resource_registry: Optional[Any] = None):
+
+        # 1. Mandatory Resource-Aware Governance Validation for any tool call providing a resource identifier
+        if resource:
+            if resource_registry is None:
+                from core.resource_registry import ResourceRegistry
+                try:
+                    resource_registry = ResourceRegistry()
+                except Exception:
+                    return PermissionDecision(
+                        False, False, "Global Resource Registry unavailable — failing closed", DecisionOutcome.DENY
+                    )
+            try:
+                res_record = resource_registry.get_resource(resource)
+            except Exception:
+                return PermissionDecision(
+                    False, False, "Failed to query Global Resource Registry — failing closed", DecisionOutcome.DENY
+                )
+            if not res_record:
+                return PermissionDecision(
+                    False, False, f"Target resource '{resource}' is unregistered in Global Resource Registry", DecisionOutcome.DENY
+                )
+            if res_record.get("status") != "registered":
+                return PermissionDecision(
+                    False, False, f"Target resource '{resource}' status is '{res_record.get('status')}' (not active/registered)", DecisionOutcome.DENY
+                )
+            res_meta = res_record.get("metadata", {})
+            allowed_project = res_meta.get("project_id")
+            if identity and identity.project_id and allowed_project and allowed_project != identity.project_id:
+                return PermissionDecision(
+                    False, False, f"Cross-resource isolation violation: Resource '{resource}' belongs to project '{allowed_project}', isolated from active project '{identity.project_id}'", DecisionOutcome.DENY
+                )
+
         policy = self.TOOL_POLICIES.get(tool)
 
         if policy is None:

@@ -38,3 +38,9 @@ workspace/link_test/
 
 # Local IDE configuration
 .vscode/settings.json
+
+# Model files and large blobs (never commit)
+blobs/
+models/
+*.gguf
+*.partial*
