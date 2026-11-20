@@ -24,13 +24,13 @@ class CognitiveEngine:
     def process_objective(prompt: str, project_id: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
         # 1. UNDERSTAND
         intent = IntentClassifier.classify(prompt)
-        
+
         # 2. RECALL
         context = ContextAssembler.assemble(prompt, project_id=project_id, session_id=session_id)
-        
+
         # 3. REASON & 4. PLAN
         requires_planning = intent in (IntentType.PLANNING, IntentType.RESEARCH, IntentType.EXECUTION)
-        
+
         return {
             "intent": intent.value,
             "context": context,

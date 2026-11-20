@@ -38,11 +38,11 @@ class BranchManager:
     def get_branch_name(language: str, timestamp: str) -> str:
         """
         Auto-generate branch name from language and timestamp.
-        
+
         Args:
             language: 'java', 'dotnet', 'python', 'typescript'
             timestamp: ISO format timestamp string
-        
+
         Returns:
             e.g., 'modernize/python-2026-11-14T10-00-00Z'
         """
@@ -51,7 +51,7 @@ class BranchManager:
     def create_feature_branch(self, head_branch: str, base_branch: str = "main"):
         """
         Create an autonomous feature branch from head_branch.
-        
+
         Args:
             head_branch: Source branch to fork from (e.g., 'feature/new-feature')
             base_branch: Target branch to merge into (default: 'main')

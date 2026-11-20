@@ -38,7 +38,7 @@ class RestorationManager:
         """
         if name not in self.restoration_points:
             raise ValueError(f"Restoration point '{name}' not found")
-        
+
         point = self.restoration_points[name]
         print(f"[RestorationManager] Restoring to {point.name} ({point.commit_hash})")
         # In production, would call git reset --hard/--mixed <commit_hash>

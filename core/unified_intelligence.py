@@ -146,7 +146,7 @@ class UnifiedIntelligenceEngine:
         from brain.model_types import ModelRequest
 
         gateway = ModelGateway.with_local_defaults()
-        
+
         # Build a ModelRequest with appropriate messages
         request = ModelRequest(
             messages=({"role": "user", "content": prompt},),
@@ -174,9 +174,9 @@ class UnifiedIntelligenceEngine:
         # Merge LLM insights into subgoals if available
         if llm_insights and not llm_insights.startswith("LLM invocation failed"):
             # Extract key points from LLM response to form subgoals
-            key_lines = [line.strip() for line in llm_insights.split('\n') 
-                        if line.strip() and not line.startswith('Okay') 
-                        and not line.startswith('Hmm') 
+            key_lines = [line.strip() for line in llm_insights.split('\n')
+                        if line.strip() and not line.startswith('Okay')
+                        and not line.startswith('Hmm')
                         and not line.startswith('First')]
             if key_lines:
                 subgoals.extend(key_lines[:4])  # Limit to 4 key insights

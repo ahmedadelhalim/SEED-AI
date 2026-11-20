@@ -38,7 +38,7 @@ class ProjectVersioner:
             VersionBump enum value
         """
         change_types = [c.get("type") for c in changes if isinstance(c, dict)]
-        
+
         if "breaking" in change_types or "major" in change_types:
             return VersionBump.MAJOR
         elif "feature" in change_types or "minor" in change_types:

@@ -11,12 +11,30 @@ from memory import store
 from runtime import workspace_guard
 
 
+class FakeProvider:
+    def __init__(self, n_ctx=8192, max_tokens=64, ready=True):
+        self.n_ctx = n_ctx
+        self.max_tokens = max_tokens
+        self._ready = ready
+
+    def is_ready(self):
+        return self._ready
+
+    def count_chat_tokens(self, messages, tools=None):
+        return len(messages) * 10 + (50 if tools else 0)
+
+
 class BenchmarkGateway:
-    def __init__(self, responses):
+    def __init__(self, responses, provider=None):
         self.responses = list(responses)
+        self.default_provider = "fake"
+        self._provider = provider or FakeProvider()
 
     def complete(self, request, provider_name=None):
         return self.responses.pop(0)
+
+    def get_provider(self, name):
+        return self._provider
 
 
 class CapabilityBenchmarkTests(unittest.TestCase):

@@ -22,10 +22,10 @@ Example:
 
     # Track commits with metadata
     ci.format_commit_message("Add new function")
-    
+
     # Analyze conflicts before merge
     ca.analyze_branch_conflict("feature/new-feature", "main")
-    
+
     # Bump version after changes
     pv.next_version("1.0.0", VersionBump.FEATURE)
     

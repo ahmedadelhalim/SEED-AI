@@ -38,7 +38,7 @@ class ConflictAnalyzer:
             recommendations=["Proceed with merge"],
             timestamp=datetime.now().isoformat(),
         )
-        
+
         print(f"[ConflictAnalyzer] Analyzing merge between {source_branch} and {target_branch}")
         return analysis
 
