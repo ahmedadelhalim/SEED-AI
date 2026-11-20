@@ -365,6 +365,39 @@
     }
   }
 
+  async function loadMemory() {
+    const result = await api("/api/memory");
+    const items = result.memory_items || [];
+    const table = document.getElementById("memory-table");
+    if (!table) return;
+    table.replaceChildren();
+    if (!items.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.className = "list-placeholder";
+      cell.textContent = "No memory items have been recorded.";
+      row.appendChild(cell);
+      table.appendChild(row);
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement("tr");
+      const typeCell = document.createElement("td");
+      typeCell.textContent = item.memory_type;
+      const keyCell = document.createElement("td");
+      keyCell.textContent = item.memory_key;
+      const contentCell = document.createElement("td");
+      contentCell.textContent = item.content;
+      const projectCell = document.createElement("td");
+      projectCell.textContent = item.project_id || "Local";
+      const updatedCell = document.createElement("td");
+      updatedCell.textContent = item.updated_at;
+      row.append(typeCell, keyCell, contentCell, projectCell, updatedCell);
+      table.appendChild(row);
+    }
+  }
+
   async function loadStatus() {
     try {
       const status = await api("/api/status");
@@ -506,20 +539,25 @@
         assistant: "Assistant",
         tasks: "Task center",
         activity: "Activity & audit",
+        memory: "Memory & knowledge",
         settings: "System settings",
       };
       document.getElementById("topbar-section").textContent = sectionLabels[currentView];
       if (currentView === "tasks") loadTasks().catch(() => {});
       if (currentView === "activity") loadAudit().catch(() => {});
+      if (currentView === "memory") loadMemory().catch(() => {});
     });
   });
 
   document.getElementById("refresh-button").addEventListener("click", () => {
     loadStatus().catch(() => {});
     if (currentView === "activity") loadAudit().catch(() => {});
+    if (currentView === "memory") loadMemory().catch(() => {});
   });
   document.getElementById("tasks-refresh").addEventListener("click", () => loadTasks().catch(() => {}));
   document.getElementById("audit-refresh").addEventListener("click", () => loadAudit().catch(() => {}));
+  const memRefresh = document.getElementById("memory-refresh");
+  if (memRefresh) memRefresh.addEventListener("click", () => loadMemory().catch(() => {}));
 
   document.addEventListener("click", (e) => {
     if (e.target.classList.contains("suggestion-chip")) {
@@ -530,6 +568,88 @@
       }
     }
   });
+
+  const planButton = document.getElementById("plan-button");
+  const planPanel = document.getElementById("plan-panel");
+  const closePlanBtn = document.getElementById("close-plan-btn");
+  const planContent = document.getElementById("plan-content");
+
+  if (planButton && planPanel && closePlanBtn && planContent) {
+    closePlanBtn.addEventListener("click", () => { planPanel.hidden = true; });
+    planButton.addEventListener("click", async () => {
+      const objective = elements.input.value.trim();
+      if (!objective) {
+        alert("Please enter an objective for the plan.");
+        return;
+      }
+      setOrbState("processing", "Generating live execution plan");
+      planPanel.hidden = false;
+      planContent.replaceChildren();
+      const loading = document.createElement("p");
+      loading.className = "list-placeholder";
+      loading.textContent = "Generating plan…";
+      planContent.appendChild(loading);
+
+      try {
+        const plan = await api("/api/plan", {
+          method: "POST",
+          body: JSON.stringify({ objective }),
+        });
+        planContent.replaceChildren();
+        const title = document.createElement("strong");
+        title.textContent = "Plan #" + (plan.plan_id || "generated") + " (" + (plan.status || "ready") + ")";
+        planContent.appendChild(title);
+
+        for (const step of plan.steps || []) {
+          const stepRow = document.createElement("div");
+          stepRow.className = "plan-step";
+          const desc = document.createElement("span");
+          desc.textContent = "Step " + step.step_id + ": " + step.description;
+          const actions = document.createElement("div");
+          actions.className = "plan-step-actions";
+          const badge = document.createElement("span");
+          badge.className = "status-tag " + (step.status || "pending");
+          badge.textContent = step.status || "pending";
+          actions.appendChild(badge);
+          stepRow.append(desc, actions);
+          planContent.appendChild(stepRow);
+        }
+
+        const executeBtn = document.createElement("button");
+        executeBtn.type = "button";
+        executeBtn.className = "send-button";
+        executeBtn.style.marginTop = "10px";
+        executeBtn.textContent = "Execute Plan";
+        executeBtn.addEventListener("click", async () => {
+          executeBtn.disabled = true;
+          setOrbState("executing", "Executing live plan");
+          try {
+            const execResult = await api("/api/plan/execute", {
+              method: "POST",
+              body: JSON.stringify({ plan_id: plan.plan_id }),
+            });
+            appendMessage("assistant", "Plan execution finished with status: " + execResult.status);
+            setOrbState("responding", "Plan executed");
+            planPanel.hidden = true;
+          } catch (err) {
+            alert("Plan execution failed: " + err.message);
+            setOrbState("error", "Plan execution failed");
+          } finally {
+            executeBtn.disabled = false;
+          }
+        });
+        planContent.appendChild(executeBtn);
+        setOrbState("idle", "Plan ready");
+      } catch (err) {
+        planContent.replaceChildren();
+        const errP = document.createElement("p");
+        errP.style.color = "var(--red)";
+        errP.textContent = "Plan generation failed: " + err.message;
+        planContent.appendChild(errP);
+        setOrbState("error", "Plan generation failed");
+      }
+    });
+  }
 
   function connectEvents() {
     const source = new EventSource("/api/events?after=" + latestEventId);

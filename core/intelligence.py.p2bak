@@ -1,0 +1,282 @@
+"""
+SEED Advanced Intelligence Architecture
+Separates intent understanding, context assembly, execution verification, and adaptive communication.
+"""
+
+import json
+import time
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+from memory import store
+
+
+class IntentType(Enum):
+    CONVERSATION = "conversation"
+    QUESTION = "question"
+    RESEARCH = "research"
+    PLANNING = "planning"
+    CREATIVE = "creative"
+    EXECUTION = "execution"
+
+
+class VerificationOutcome(Enum):
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILURE = "failure"
+    UNVERIFIED = "unverified"
+
+
+class IntentClassifier:
+    """Classifies user input into structured intents without rigid keyword-only routing."""
+
+    @staticmethod
+    def classify(prompt: str) -> IntentType:
+        text = prompt.lower().strip()
+        if any(w in text for w in ("plan", "decompose", "steps", "roadmap", "strategy")):
+            return IntentType.PLANNING
+        if any(w in text for w in ("research", "analyze", "explore", "inspect", "audit", "check")):
+            return IntentType.RESEARCH
+        if any(w in text for w in ("run", "execute", "call", "list", "search", "read", "write", "delete", "fix")):
+            return IntentType.EXECUTION
+        if any(w in text for w in ("write", "create", "design", "compose", "story", "code")):
+            return IntentType.CREATIVE
+        if any(w in text for w in ("what", "how", "why", "who", "when", "tell me", "?")):
+            return IntentType.QUESTION
+        return IntentType.CONVERSATION
+
+
+# Shared tokenizer — NO duplicate model loading.
+# Tokenization is delegated to the already-loaded inference provider.
+# If no provider is loaded, a conservative heuristic (2 chars/token) is used.
+_SHARED_TOKENIZER_PROVIDER = None
+_TOKENIZER_AVAILABLE = False
+
+
+def set_shared_tokenizer_provider(provider) -> None:
+    """Register the inference provider for shared tokenization.
+
+    Call this once the provider has been loaded.  Tokenization will then
+    reuse the provider's already-loaded model weights instead of creating
+    a second Llama instance.
+    """
+    global _SHARED_TOKENIZER_PROVIDER, _TOKENIZER_AVAILABLE
+    _SHARED_TOKENIZER_PROVIDER = provider
+    _TOKENIZER_AVAILABLE = provider is not None and getattr(provider, "is_ready", lambda: False)()
+
+
+class ContextAssembler:
+    """Assembles relevant bounded context (memories, project state, tasks, history).
+
+    Applies a configurable token budget to prevent context overflow.
+    Uses actual model tokenizer when available, falls back to heuristic estimator.
+    Memories and historical tasks are ranked by relevance (search returns
+    ranked results). System instructions and the current user request are
+    never truncated.
+    """
+
+    # Default context budget: 2048 tokens for context (out of 8192 n_ctx)
+    DEFAULT_CONTEXT_BUDGET_TOKENS = 2048
+    # Reserved tokens for system prompt + user request + generation
+    SYSTEM_PROMPT_RESERVE = 512
+    GENERATION_RESERVE = 256
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Estimate token count using actual tokenizer when available, else heuristic.
+
+        Uses llama-cpp-python's tokenize() for exact counts when model is loaded.
+        Falls back to 2 chars/token conservative estimate for Arabic/CJK.
+        """
+        if not text:
+            return 0
+        if _TOKENIZER_AVAILABLE and _SHARED_TOKENIZER_PROVIDER is not None:
+            try:
+                return _SHARED_TOKENIZER_PROVIDER.tokenize(text)
+            except Exception:
+                pass
+        # Fallback: conservative 2 chars/token for Arabic/CJK safety
+        return max(1, len(text) // 2)
+
+    @staticmethod
+    def _is_exact_tokenization() -> bool:
+        """Return True if the shared provider is loaded and ready."""
+        return (
+            _SHARED_TOKENIZER_PROVIDER is not None
+            and getattr(_SHARED_TOKENIZER_PROVIDER, "is_ready", lambda: False)()
+        )
+
+    @staticmethod
+    def _deduplicate(items: List[Dict[str, Any]], key_fields: Tuple[str, ...] = ("memory_key", "task_id")) -> List[Dict[str, Any]]:
+        """Remove duplicate items based on key fields."""
+        seen = set()
+        result = []
+        for item in items:
+            key = None
+            for field in key_fields:
+                if field in item:
+                    key = (field, str(item[field]))
+                    break
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def assemble(prompt: str, project_id: Optional[str] = None,
+                 session_id: Optional[str] = None,
+                 context_budget_tokens: Optional[int] = None, timing_log=None) -> Dict[str, Any]:
+        """Assemble context with relevance-based selection and token budgeting.
+
+        Args:
+            prompt: The user request / query for relevance ranking.
+            project_id: Project scope filter.
+            session_id: Session for history retrieval.
+            context_budget_tokens: Override default budget.
+            timing_log: Optional dict to receive timing measurements.
+
+        Returns:
+            Dict with assembled context and budget metadata including timing.
+        """
+        t_start = time.monotonic()
+        project = project_id or ""
+        budget = context_budget_tokens or ContextAssembler.DEFAULT_CONTEXT_BUDGET_TOKENS
+
+        # 1. Retrieve ranked results (search already ranks by relevance)
+        t_mem_start = time.monotonic()
+        raw_memories = list(store.search_memory(prompt, project_id=project, limit=12))
+        t_mem_end = time.monotonic()
+
+        t_task_start = time.monotonic()
+        raw_tasks = list(store.search_task_history(prompt, project_id=project, limit=8))
+        t_task_end = time.monotonic()
+
+        t_hist_start = time.monotonic()
+        history = list(store.get_session_messages(session_id, limit=20)) if session_id else []
+        t_hist_end = time.monotonic()
+
+        # 2. Deduplicate
+        memories = ContextAssembler._deduplicate(raw_memories, ("memory_key", "memory_id"))
+        tasks = ContextAssembler._deduplicate(raw_tasks, ("task_id",))
+
+        # 3. Budget allocation: 50% memories, 25% tasks, 25% history
+        mem_budget = int(budget * 0.5)
+        task_budget = int(budget * 0.25)
+        hist_budget = int(budget * 0.25)
+
+        # 4. Select memories within budget (already ranked by relevance)
+        selected_memories = []
+        mem_tokens = 0
+        for m in memories:
+            content = m.get("content", "")
+            item_tokens = ContextAssembler._estimate_tokens(content)
+            if mem_tokens + item_tokens > mem_budget and selected_memories:
+                break
+            selected_memories.append(m)
+            mem_tokens += item_tokens
+
+        # 5. Select historical tasks within budget
+        selected_tasks = []
+        task_tokens = 0
+        for t in tasks:
+            content = json.dumps(t, ensure_ascii=True)
+            item_tokens = ContextAssembler._estimate_tokens(content)
+            if task_tokens + item_tokens > task_budget and selected_tasks:
+                break
+            selected_tasks.append(t)
+            task_tokens += item_tokens
+
+        # 6. Select session history within budget (most recent first)
+        selected_history = []
+        hist_tokens = 0
+        for h in reversed(history):
+            content = h.get("content", "") if isinstance(h, dict) else str(h)
+            item_tokens = ContextAssembler._estimate_tokens(content)
+            if hist_tokens + item_tokens > hist_budget and selected_history:
+                break
+            selected_history.insert(0, h)
+            hist_tokens += item_tokens
+
+        total_tokens = mem_tokens + task_tokens + hist_tokens
+        t_end = time.monotonic()
+
+        timing = {
+            "memory_retrieval_ms": round((t_mem_end - t_mem_start) * 1000, 2),
+            "task_retrieval_ms": round((t_task_end - t_task_start) * 1000, 2),
+            "history_retrieval_ms": round((t_hist_end - t_hist_start) * 1000, 2),
+            "assembly_total_ms": round((t_end - t_start) * 1000, 2),
+            "exact_tokenization": ContextAssembler._is_exact_tokenization(),
+        }
+
+        if timing_log is not None:
+            timing_log.update(timing)
+
+        return {
+            "intent": IntentClassifier.classify(prompt).value,
+            "memories": selected_memories,
+            "historical_tasks": selected_tasks,
+            "session_history": selected_history,
+            "project_id": project,
+            "_context_budget": {
+                "budget_tokens": budget,
+                "memory_tokens": mem_tokens,
+                "task_tokens": task_tokens,
+                "history_tokens": hist_tokens,
+                "total_tokens": total_tokens,
+                "memories_selected": len(selected_memories),
+                "memories_available": len(memories),
+                "tasks_selected": len(selected_tasks),
+                "tasks_available": len(tasks),
+                "history_selected": len(selected_history),
+                "history_available": len(history),
+                "exact_tokenization": ContextAssembler._is_exact_tokenization(),
+            },
+            "_timing": timing,
+        }
+
+
+class ExecutionVerifier:
+    """Verifies whether a tool execution or assistant response successfully achieved the objective based on actual evidence."""
+
+    @staticmethod
+    def verify(tool_results: Tuple[Mapping[str, Any], ...], response_content: str, objective: str, file_path: Optional[str] = None) -> VerificationOutcome:
+        if file_path:
+            if Path(file_path).exists():
+                return VerificationOutcome.SUCCESS
+            else:
+                return VerificationOutcome.FAILURE
+
+        if not tool_results and not response_content.strip():
+            return VerificationOutcome.FAILURE
+        
+        statuses = [item.get("status") for item in tool_results if isinstance(item, dict)]
+        if statuses:
+            if all(s == "success" for s in statuses):
+                return VerificationOutcome.SUCCESS
+            if any(s == "success" for s in statuses):
+                return VerificationOutcome.PARTIAL
+            if any(s in ("denied", "failed", "rejected") for s in statuses):
+                return VerificationOutcome.FAILURE
+
+        if "error" in response_content.lower() or "failed" in response_content.lower():
+            return VerificationOutcome.FAILURE
+        
+        if response_content.strip():
+            return VerificationOutcome.SUCCESS
+            
+        return VerificationOutcome.UNVERIFIED
+
+
+class AdaptiveCommunicator:
+    """Formats and modulates responses based on intent and language (English & Egyptian Arabic)."""
+
+    @staticmethod
+    def format_response(content: str, intent: IntentType, outcome: VerificationOutcome) -> str:
+        prefix = ""
+        if outcome == VerificationOutcome.FAILURE:
+            prefix = "[Notice: Action encountered limitations or failure] "
+        elif outcome == VerificationOutcome.PARTIAL:
+            prefix = "[Notice: Partial execution complete] "
+        return prefix + content

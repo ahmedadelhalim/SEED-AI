@@ -34,11 +34,24 @@ def _parse_timestamp(val):
     return None
 
 
+def get_db_path() -> Path:
+    path = Path(os.environ.get(
+        "SEED_DATABASE_PATH", "D:/SEED-AI/data/seed_memory.db"
+    ))
+    if os.environ.get("SEED_TEST_MODE") == "1":
+        prod_path = Path("D:/SEED-AI/data/seed_memory.db").resolve()
+        if path.resolve() == prod_path:
+            raise RuntimeError("CRITICAL SECURITY VIOLATION: Attempted to open production database during test mode!")
+    return path
+
+
 def connect():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH, factory=ClosingConnection)
+    path = get_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000;")
     return connection
 
 

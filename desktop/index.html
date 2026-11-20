@@ -22,6 +22,7 @@
         <button class="nav-item active" type="button" data-view="assistant"><span class="nav-glyph">A</span>Assistant</button>
         <button class="nav-item" type="button" data-view="tasks"><span class="nav-glyph">T</span>Task center<span class="nav-count" id="nav-task-count">0</span></button>
         <button class="nav-item" type="button" data-view="activity"><span class="nav-glyph">E</span>Activity &amp; audit</button>
+        <button class="nav-item" type="button" data-view="memory"><span class="nav-glyph">M</span>Memory &amp; knowledge</button>
         <button class="nav-item" type="button" data-view="settings"><span class="nav-glyph">S</span>System settings</button>
       </nav>
 
@@ -93,9 +94,20 @@
               <textarea id="request-input" name="request" rows="2" maxlength="8000" placeholder="Describe what you need SEED to do / اكتب طلبك هنا…" dir="auto" required></textarea>
               <div class="composer-footer">
                 <span class="composer-note">Text requests go through SeedOrchestrator.</span>
-                <button class="send-button" id="send-button" type="submit"><span>Send to SEED</span><span class="send-arrow" aria-hidden="true">↗</span></button>
+                <div style="display: flex; gap: 8px;">
+                  <button class="suggestion-chip" id="plan-button" type="button">Generate Plan</button>
+                  <button class="send-button" id="send-button" type="submit"><span>Send to SEED</span><span class="send-arrow" aria-hidden="true">↗</span></button>
+                </div>
               </div>
             </form>
+
+            <div class="plan-panel" id="plan-panel" hidden>
+              <div class="plan-header">
+                <h3>Live Execution Plan</h3>
+                <button type="button" id="close-plan-btn" class="icon-button" style="width:28px;height:28px;font-size:12px;">×</button>
+              </div>
+              <div id="plan-content"></div>
+            </div>
 
             <div class="voice-placeholder" aria-label="Advanced Voice Controls">
               <button type="button" id="voice-listen-btn" class="voice-button" onclick="window.SeedVoice.listen()" aria-label="Start Voice Recognition">
@@ -145,6 +157,11 @@
       <section class="view" id="activity-view" aria-labelledby="activity-title" hidden>
         <div class="page-heading"><div><p class="eyebrow">OPERATIONAL TRACE</p><h1 id="activity-title">Activity &amp; audit</h1></div><span class="data-label">EVENT METADATA ONLY</span></div>
         <section class="data-surface"><div class="data-heading"><div><h2>Recent events</h2><p>Permission and execution lifecycle</p></div><button class="text-button" id="audit-refresh" type="button">Refresh</button></div><div class="event-list" id="audit-list"><p class="list-placeholder">Loading audit events…</p></div></section>
+      </section>
+
+      <section class="view" id="memory-view" aria-labelledby="memory-title" hidden>
+        <div class="page-heading"><div><p class="eyebrow">PERSISTENT KNOWLEDGE</p><h1 id="memory-title">Memory &amp; knowledge</h1></div><span class="data-label">SEMANTIC STORE</span></div>
+        <section class="data-surface"><div class="data-heading"><div><h2>Stored memories</h2><p>Semantic and persistent memory items</p></div><button class="text-button" id="memory-refresh" type="button">Refresh</button></div><div class="table-scroll"><table><thead><tr><th>Type</th><th>Key</th><th>Content</th><th>Project</th><th>Updated</th></tr></thead><tbody id="memory-table"><tr><td colspan="5" class="list-placeholder">Loading memory items…</td></tr></tbody></table></div></section>
       </section>
 
       <section class="view" id="settings-view" aria-labelledby="settings-title" hidden>
