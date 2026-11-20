@@ -9,6 +9,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from brain.model_gateway import ModelGateway
 from brain.model_types import ModelRequest, ToolCall
+from brain.providers.base import ProviderError
 from core.plan_engine import PlanEngine
 from core.planning import PlanValidationError, PlanningContract
 from core.task_engine import TaskEngine
@@ -195,6 +196,61 @@ class SeedOrchestrator:
                     task_id, current_session, "timed_out", "Execution time limit reached.",
                     step - 1, tool_results, memory_results=mem_result_dicts,
                 )
+
+            # --- P2 context admission: exact chat-template token counting ---
+            # Count the actual inference messages using the GGUF chat template.
+            # Fail closed on any error — never admit based on heuristic.
+            # No request may bypass admission because the provider is unavailable.
+            _provider = None
+            try:
+                _provider_name = provider or getattr(self.gateway, "default_provider", None)
+                if _provider_name is not None:
+                    _provider = self.gateway.get_provider(_provider_name)
+            except Exception:
+                _provider = None
+            if _provider is None:
+                raise ProviderError(
+                    "provider_unavailable",
+                    "Context admission requires an available provider; provider is None",
+                )  # provider_unavailable
+            if not getattr(_provider, "is_ready", lambda: False)():
+                raise ProviderError(
+                    "provider_not_ready",
+                    "Context admission requires a ready provider; provider is not ready",
+                )
+            if not hasattr(_provider, "count_chat_tokens"):
+                raise ProviderError(
+                    "count_chat_tokens_missing",
+                    "Provider does not support exact chat-template token counting",
+                )
+            try:
+                _formatted_tokens = _provider.count_chat_tokens(
+                    [dict(m) for m in messages],
+                    tools=[dict(t) for t in self.tools.model_tools()],
+                )
+            except Exception as _exc:
+                raise ProviderError(
+                    "context_token_count_failed",
+                    f"Exact chat-template token counting failed: {_exc}",
+                )
+            _n_ctx = getattr(_provider, "n_ctx", 8192)
+            # Derive generation reserve from actual max_tokens allowance
+            _effective_max_tokens = getattr(self.config, "max_tokens", None)
+            if _effective_max_tokens is None:
+                _effective_max_tokens = getattr(_provider, "max_tokens", 64)
+            _gen_reserve = max(_effective_max_tokens, 64)
+            if _formatted_tokens + _gen_reserve > _n_ctx:
+                self.tasks.record_event(
+                    task_id, "context_overflow_rejected",
+                    f"formatted={_formatted_tokens} reserve={_gen_reserve} n_ctx={_n_ctx}",
+                )
+                return self._finish(
+                    task_id, current_session, "failed",
+                    "Context exceeds model window after exact chat-template token counting. "
+                    "Please reduce conversation history or memory context.",
+                    step, tool_results, memory_results=mem_result_dicts,
+                )
+            # --- end P2 context admission ---
 
             request = ModelRequest(
                 messages=tuple(messages),

@@ -18,6 +18,7 @@ class ModelRequest:
     timeout_seconds: Optional[float] = None
     provider: Optional[str] = None
     response_format: Optional[Mapping[str, Any]] = None
+    cancellation_token: Optional[Any] = None
 
     def __post_init__(self):
         if not self.messages:

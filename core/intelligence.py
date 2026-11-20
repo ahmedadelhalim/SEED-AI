@@ -236,6 +236,39 @@ class ContextAssembler:
             "_timing": timing,
         }
 
+    @staticmethod
+    def count_chat_tokens(messages, tools=None):
+        """Count tokens for a chat message list using the exact chat template.
+
+        Delegates to the shared provider's count_chat_tokens when available.
+        If the provider is not loaded, raises — never silently falls back to
+        raw-text counting for chat messages.
+
+        Returns:
+            Exact formatted token count.
+
+        Raises:
+            RuntimeError if no shared provider is available.
+        """
+        if _SHARED_TOKENIZER_PROVIDER is not None:
+            count_fn = getattr(_SHARED_TOKENIZER_PROVIDER, "count_chat_tokens", None)
+            if count_fn is not None:
+                try:
+                    return count_fn(messages, tools=tools)
+                except Exception:
+                    pass
+        raise RuntimeError(
+            "No shared tokenizer provider available for chat token counting. "
+            "Call set_shared_tokenizer_provider() first."
+        )
+
+    @staticmethod
+    def enforce_context_limit(formatted_input_tokens: int,
+                            generation_reserve: int = 256,
+                            n_ctx: int = 8192) -> bool:
+        """Return True if formatted_input_tokens + generation_reserve <= n_ctx."""
+        return (formatted_input_tokens + generation_reserve) <= n_ctx
+
 
 class ExecutionVerifier:
     """Verifies whether a tool execution or assistant response successfully achieved the objective based on actual evidence."""

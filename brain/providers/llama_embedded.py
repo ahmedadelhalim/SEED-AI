@@ -124,10 +124,30 @@ class EmbeddedLlamaProvider(ModelProvider):
             return backend.tokenize_exact(text)
         return None
 
+    def count_chat_tokens(self, messages, tools=None):
+        """Delegate to real backend's exact chat-token counter.
+
+        Fail closed if model is not loaded — never return heuristic.
+        """
+        backend = self._real_backend
+        if backend is None or not backend.is_ready():
+            if not self.load_model():
+                raise ProviderError(
+                    "model_not_loaded",
+                    "Cannot count chat tokens: model not loaded",
+                )
+            backend = self._real_backend
+        if backend is None or not backend.is_ready():
+            raise ProviderError(
+                "model_not_loaded",
+                "Cannot count chat tokens: model not ready",
+            )
+        return backend.count_chat_tokens(messages, tools=tools)
+
     def list_models(self) -> Tuple[str, ...]:
-        if not self.load_model():
-            return ()
-        return (self.default_model,)
+        if Path(self.model_path).is_file():
+            return (self.default_model,)
+        return ()
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities(
@@ -142,20 +162,12 @@ class EmbeddedLlamaProvider(ModelProvider):
         from brain.providers.base import ProviderHealth
         from datetime import datetime, timezone
         checked_at = datetime.now(timezone.utc).isoformat()
-        try:
-            models = self.list_models()
-        except ProviderError as error:
-            return ProviderHealth(
-                provider=self.name,
-                healthy=False,
-                checked_at=checked_at,
-                error_code=error.code,
-            )
+        exists = Path(self.model_path).is_file()
         return ProviderHealth(
             provider=self.name,
-            healthy=self.is_ready(),
+            healthy=exists,
             checked_at=checked_at,
-            model_count=len(models),
+            model_count=1 if exists else 0,
         )
 
     def chat(self, request: ModelRequest) -> ModelResponse:

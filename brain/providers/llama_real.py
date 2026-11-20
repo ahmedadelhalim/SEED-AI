@@ -86,11 +86,18 @@ class RealLlamaProvider(ModelProvider):
             return True
 
     def unload_model(self):
-        """Release model resources."""
+        """Release model resources safely by acquiring both load and inference locks."""
         with self._load_lock:
-            if self._model:
-                self._model = None
-            self._loaded = False
+            with self._inference_lock:
+                if self._model is not None:
+                    try:
+                        del self._model
+                    except Exception:
+                        pass
+                    self._model = None
+                self._loaded = False
+                import gc
+                gc.collect()
 
     def is_ready(self) -> bool:
         """Return True if model is loaded and ready for inference."""
@@ -125,6 +132,105 @@ class RealLlamaProvider(ModelProvider):
                 return len(self._model.tokenize(text.encode("utf-8")))
             except Exception:
                 return None
+
+    def count_chat_tokens(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> int:
+        """Count tokens using the exact same formatting as inference.
+
+        Uses the GGUF's embedded Jinja chat template rendered via
+        Jinja2ChatFormatter, then tokenized with add_bos=True, special=True
+        — matching the path used by ``create_chat_completion`` internally.
+        Tool definitions are included in the template rendering (same as
+        inference when ``tools`` is passed to create_chat_completion).
+
+        Never silently falls back to raw-text counting.  If the template is
+        missing, unsupported, or rendering fails, raises ProviderError.
+
+        Args:
+            messages: OpenAI-style message list (role, content, ...).
+            tools: Optional list of tool definitions (OpenAI format) to
+                   include in template rendering.
+
+        Returns:
+            Exact token count matching inference ``usage.prompt_tokens``.
+        """
+        if not self.load_model():
+            raise ProviderError(
+                "model_load_failed",
+                "Cannot count chat tokens: model not loaded",
+            )
+
+        # Normalize messages
+        normalized: List[Dict[str, Any]] = []
+        for msg in (messages or []):
+            if not isinstance(msg, Mapping):
+                continue
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            entry: Dict[str, Any] = {"role": role, "content": content}
+            if "tool_call_id" in msg:
+                entry["tool_call_id"] = msg["tool_call_id"]
+            if "name" in msg:
+                entry["name"] = msg["name"]
+            if "tool_calls" in msg:
+                entry["tool_calls"] = msg["tool_calls"]
+            normalized.append(entry)
+        if not normalized:
+            normalized = [{"role": "user", "content": ""}]
+
+        try:
+            from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+
+            template = self._model.metadata.get("tokenizer.chat_template")
+            if not template:
+                raise ProviderError(
+                    "no_chat_template",
+                    "GGUF metadata does not contain tokenizer.chat_template",
+                )
+
+            # Resolve eos/bos token strings from metadata
+            eos_token_id = self._model.metadata.get("tokenizer.ggml.eos_token_id")
+            bos_token_id = self._model.metadata.get("tokenizer.ggml.bos_token_id")
+            eos_token = ""
+            bos_token = ""
+            if eos_token_id is not None:
+                try:
+                    eos_token = self._model.detokenize([int(eos_token_id)])
+                    if isinstance(eos_token, bytes):
+                        eos_token = eos_token.decode("utf-8", errors="replace")
+                except Exception:
+                    eos_token = ""
+            if bos_token_id is not None:
+                try:
+                    bos_token = self._model.detokenize([int(bos_token_id)])
+                    if isinstance(bos_token, bytes):
+                        bos_token = bos_token.decode("utf-8", errors="replace")
+                except Exception:
+                    bos_token = ""
+
+            formatter = Jinja2ChatFormatter(
+                template=template,
+                eos_token=eos_token,
+                bos_token=bos_token,
+                add_generation_prompt=True,
+            )
+            result = formatter(messages=normalized, tools=tools)
+            prompt_text = result.prompt
+
+            with self._inference_lock:
+                token_ids = self._model.tokenize(
+                    prompt_text.encode("utf-8"),
+                    add_bos=not result.added_special,
+                    special=True,
+                )
+            return len(token_ids)
+
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                "chat_token_count_failed",
+                f"Chat template token counting failed: {exc}",
+            ) from exc
 
     def list_models(self) -> Tuple[str, ...]:
         if not self.load_model():
@@ -232,10 +338,20 @@ class RealLlamaProvider(ModelProvider):
             kwargs["response_format"] = {"type": "json_object"}
 
         deadline = time.monotonic() + timeout
-        self._cancel_event.clear()
+        cancel_token = getattr(request, "cancellation_token", None) or threading.Event()
+        if hasattr(cancel_token, "clear"):
+            try:
+                cancel_token.clear()
+            except Exception:
+                pass
 
         try:
             with self._inference_lock:
+                if self._model is None or not self._loaded:
+                    if not self.load_model() or self._model is None:
+                        raise ProviderError("model_not_loaded", "Model not loaded")
+                if hasattr(cancel_token, "is_set") and cancel_token.is_set():
+                    raise ProviderError("cancelled", "Request was cancelled before inference started")
                 result = self._model.create_chat_completion(**kwargs)
         except Exception as error:  # noqa: BLE001 - normalize backend failures
             raise ProviderError(
@@ -310,13 +426,16 @@ class RealLlamaProvider(ModelProvider):
             model_count=len(models),
         )
 
-    def cancel(self) -> None:
-        """Signal cooperative cancellation of an in-flight generation."""
-        self._cancel_event.set()
+    def cancel(self, token: Optional[Any] = None) -> None:
+        """Signal cooperative cancellation for a specific request token or globally."""
+        if token is not None and hasattr(token, "set"):
+            token.set()
+        else:
+            self._cancel_event.set()
 
     def chat_stream(self, request: ModelRequest,
                     callback: Callable[[str], None]) -> Iterator[str]:
-        """Stream tokens from the model in real-time."""
+        """Stream tokens from the model in real-time under inference lock protection with request-scoped cancellation and chunk-level timeout."""
         model = request.model or self.default_model
 
         if not self.load_model():
@@ -348,50 +467,86 @@ class RealLlamaProvider(ModelProvider):
             accumulated += token
             callback(token)
 
+        cancel_token = getattr(request, "cancellation_token", None) or self._cancel_event
+        if hasattr(cancel_token, "clear"):
+            try:
+                cancel_token.clear()
+            except Exception:
+                pass
+
+        deadline = time.monotonic() + timeout
+        result_generator = None
+
         try:
             with self._inference_lock:
-                result_generator = self._model.create_chat_completion(**kwargs)  # type: ignore[attr-defined]
-        except Exception as error:  # noqa: BLE001 - normalize backend failures
-            raise ProviderError(
-                "inference_failed",
-                f"Real model inference failed: {error}",
-            ) from error
+                if self._model is None or not self._loaded:
+                    if not self.load_model() or self._model is None:
+                        raise ProviderError("model_not_loaded", "Model not loaded")
+                try:
+                    result_generator = self._model.create_chat_completion(**kwargs)  # type: ignore[attr-defined]
+                except Exception as error:  # noqa: BLE001 - normalize backend failures
+                    raise ProviderError(
+                        "inference_failed",
+                        f"Real model inference failed: {error}",
+                    ) from error
 
-        # Consume the stream generator
-        try:
-            for chunk in result_generator:
-                # chunk is typically a dict with 'choices' key
-                choices = chunk.get("choices") or []
-                if choices:
-                    delta = choices[0].get("delta") or {}
-                    content = delta.get("content", "")
-                    if content:
-                        _emit(content)
-                # Also check for content in the chunk itself
-                if "choices" in chunk and len(chunk["choices"]) > 0:
-                    msg = chunk["choices"][0].get("message", {})
-                    if msg.get("content"):
-                        _emit(msg["content"])
-        except Exception:
-            # If streaming failed, fall back to a single non-streaming call
-            try:
-                result = self._model.create_chat_completion(
-                    messages=messages,
-                    max_tokens=self.max_tokens,
-                    temperature=temperature,
-                    stop=self._stop_sequences(request),
-                    stream=False,
-                )
-                choices = (result or {}).get("choices") or []
-                if choices:
-                    message = choices[0].get("message") or {}
-                    content = message.get("content") or ""
-                    if content:
-                        _emit(content)
-            except Exception as fallback_error:
-                raise ProviderError(
-                    "inference_failed",
-                    f"Real model inference failed: {fallback_error}",
-                ) from fallback_error
+                # Consume the stream generator under lock protection with chunk-level timeout and cancellation checks
+                for chunk in result_generator:
+                    if hasattr(cancel_token, "is_set") and cancel_token.is_set():
+                        break
+                    if time.monotonic() > deadline:
+                        raise ProviderError(
+                            "timeout",
+                            f"Streaming generation exceeded timeout of {timeout:.1f}s",
+                            retryable=True,
+                        )
+                    # chunk is typically a dict with 'choices' key
+                    choices = chunk.get("choices") or []
+                    if choices:
+                        delta = choices[0].get("delta") or {}
+                        content = delta.get("content", "")
+                        if content:
+                            _emit(content)
+                    # Also check for content in the chunk itself
+                    if "choices" in chunk and len(chunk["choices"]) > 0:
+                        msg = chunk["choices"][0].get("message", {})
+                        if msg.get("content"):
+                            _emit(msg["content"])
+        except ProviderError:
+            raise
+        except Exception as error:
+            is_cancelled = False
+            if hasattr(cancel_token, "is_set") and cancel_token.is_set():
+                is_cancelled = True
+            if not is_cancelled:
+                try:
+                    with self._inference_lock:
+                        result = self._model.create_chat_completion(
+                            messages=messages,
+                            max_tokens=self.max_tokens,
+                            temperature=temperature,
+                            stop=self._stop_sequences(request),
+                            stream=False,
+                        )
+                        choices = (result or {}).get("choices") or []
+                        if choices:
+                            message = choices[0].get("message") or {}
+                            content = message.get("content") or ""
+                            if content:
+                                _emit(content)
+                except Exception as fallback_error:
+                    raise ProviderError(
+                        "inference_failed",
+                        f"Real model inference failed: {fallback_error}",
+                    ) from fallback_error
+            else:
+                pass
+        finally:
+            if result_generator is not None:
+                try:
+                    if hasattr(result_generator, "close"):
+                        result_generator.close()
+                except Exception:
+                    pass
 
         yield accumulated
