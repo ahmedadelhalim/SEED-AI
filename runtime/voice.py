@@ -10,7 +10,7 @@ from enum import Enum
 
 class VoiceProvider(Enum):
     """Available voice providers"""
-    BROWSER_WEB Speech = "browser"
+    BROWSER_WEB_SPEECH = "browser"
     AZURE_SPEECH = "azure"
     OLLAMA_LOCAL = "ollama"
 
@@ -18,7 +18,7 @@ class VoiceProvider(Enum):
 @dataclass
 class VoiceConfig:
     """Voice configuration"""
-    provider: VoiceProvider = VoiceProvider.BROWSER_WEB Speech
+    provider: VoiceProvider = VoiceProvider.BROWSER_WEB_SPEECH
     voice_id: str = "en-US-JennyNeural"
     rate: float = 1.0  # Speech rate (0.5-2.0)
     pitch: float = 1.0
